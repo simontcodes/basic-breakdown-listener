@@ -21,6 +21,7 @@ if (typeof fetch !== "function") {
     "Global fetch() is not available. Use Node 20+ or add a fetch polyfill (node-fetch)."
   );
 }
+//test comment
 
 const client = new Client({
   intents: [
