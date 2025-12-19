@@ -1,5 +1,5 @@
+require("dotenv").config();
 const { Client, GatewayIntentBits, Partials, Events } = require("discord.js");
-
 // -------------------------
 // ENV VARS (Required)
 // -------------------------
