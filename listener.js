@@ -56,10 +56,9 @@ function isThumbsDown(emojiName) {
   return typeof emojiName === "string" && emojiName.startsWith("👎");
 }
 
-function looksLikeDraftMessage(message) {
-  // Keep simple for now; tighten later if needed
-  const content = typeof message.content === "string" ? message.content : "";
-  return content.includes("Basic Breakdown");
+// ✅ Fix: treat ALL bot messages in the channel as drafts (simple + reliable)
+function looksLikeDraftMessage(_message) {
+  return true;
 }
 
 async function ensureFullReaction(reaction) {
@@ -124,7 +123,6 @@ async function handleReaction({ reaction, user, type }) {
     const emojiName = reaction.emoji?.name ?? "";
     const emojiId = reaction.emoji?.id ?? null;
 
-    // Always log so we know the handler runs
     console.log(`${type} REACTION`, {
       emojiName,
       emojiId,
@@ -135,7 +133,6 @@ async function handleReaction({ reaction, user, type }) {
       channelId: reaction.message.channelId,
     });
 
-    // Only act on ADD
     if (type !== "ADD") return;
 
     // -------------------------
@@ -162,7 +159,6 @@ async function handleReaction({ reaction, user, type }) {
     const isBotMessage = reaction.message.author?.id === client.user.id;
     const looksLikeDraft = looksLikeDraftMessage(reaction.message);
 
-    // Log why we might be skipping
     console.log("APPROVAL CHECK", {
       isBotMessage,
       authorId: reaction.message.author?.id,
