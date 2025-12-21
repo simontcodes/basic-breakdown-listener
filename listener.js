@@ -41,56 +41,90 @@ const emojiToChoice = {
   "5️⃣": 5,
 };
 
+// -------------------------
+// Helpers
+// -------------------------
 function sameChannel(channelId) {
-  // Ensure both are strings (Discord IDs are strings)
   return String(channelId) === String(CHANNEL_ID);
 }
 
 function isThumbsUp(emojiName) {
-  // Covers 👍 plus skin-tone variants like 👍🏻👍🏼👍🏽👍🏾👍🏿
   return typeof emojiName === "string" && emojiName.startsWith("👍");
 }
 
 function isThumbsDown(emojiName) {
-  // Covers 👎 plus skin-tone variants
   return typeof emojiName === "string" && emojiName.startsWith("👎");
 }
 
 function looksLikeDraftMessage(message) {
-  // Make this stricter if you want:
-  // - check for a known header marker
-  // - check embed title
-  // - check a prefix like "[DRAFT]"
+  // Keep simple for now; tighten later if needed
   const content = typeof message.content === "string" ? message.content : "";
   return content.includes("Basic Breakdown");
 }
 
 async function ensureFullReaction(reaction) {
-  // Because we use partials, fetch if needed
   if (reaction.partial) await reaction.fetch();
   if (reaction.message?.partial) await reaction.message.fetch();
   return reaction;
 }
 
-// Clean "ready" event
+async function postJson(url, payload, label) {
+  console.log(`[${label}] POST ->`, url);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    const text = await res.text().catch(() => "");
+    console.log(`[${label}] <-`, {
+      status: res.status,
+      ok: res.ok,
+      bodyPreview: text.slice(0, 200),
+    });
+
+    return { res, text };
+  } catch (err) {
+    console.error(`[${label}] ERROR`, err);
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// -------------------------
+// Ready
+// -------------------------
 client.once(Events.ClientReady, (c) => {
   console.log(`Logged in as ${c.user.tag}`);
+  console.log("Config:", {
+    CHANNEL_ID: String(CHANNEL_ID),
+    N8N_CHOICE_WEBHOOK_URL,
+    N8N_APPROVE_WEBHOOK_URL,
+  });
 });
 
-// Shared handler for add/remove if you ever want it
+// -------------------------
+// Reaction handling
+// -------------------------
 async function handleReaction({ reaction, user, type }) {
   try {
     if (user?.bot) return;
 
     await ensureFullReaction(reaction);
 
-    // Only handle reactions in the configured channel
     if (!sameChannel(reaction.message.channelId)) return;
 
     const emojiName = reaction.emoji?.name ?? "";
     const emojiId = reaction.emoji?.id ?? null;
 
-    // Helpful debug (you can remove once confirmed)
+    // Always log so we know the handler runs
     console.log(`${type} REACTION`, {
       emojiName,
       emojiId,
@@ -101,11 +135,14 @@ async function handleReaction({ reaction, user, type }) {
       channelId: reaction.message.channelId,
     });
 
+    // Only act on ADD
+    if (type !== "ADD") return;
+
     // -------------------------
     // 1) TOPIC CHOICE: 1–5
     // -------------------------
     const choice = emojiToChoice[emojiName];
-    if (choice && type === "ADD") {
+    if (choice) {
       const payload = {
         choice,
         emoji: emojiName,
@@ -115,33 +152,29 @@ async function handleReaction({ reaction, user, type }) {
         guildId: reaction.message.guildId,
       };
 
-      const res = await fetch(N8N_CHOICE_WEBHOOK_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      console.log(
-        `Sent choice ${choice} to n8n – HTTP ${res.status} (${emojiName})`
-      );
+      await postJson(N8N_CHOICE_WEBHOOK_URL, payload, `CHOICE ${choice}`);
       return;
     }
 
     // -------------------------
     // 2) DRAFT APPROVAL: 👍 / 👎
     // -------------------------
-
-    // Only consider messages sent by *this* bot and that look like a draft
     const isBotMessage = reaction.message.author?.id === client.user.id;
     const looksLikeDraft = looksLikeDraftMessage(reaction.message);
+
+    // Log why we might be skipping
+    console.log("APPROVAL CHECK", {
+      isBotMessage,
+      authorId: reaction.message.author?.id,
+      botId: client.user.id,
+      looksLikeDraft,
+      contentPreview: (reaction.message.content || "").slice(0, 120),
+    });
 
     if (!isBotMessage || !looksLikeDraft) return;
 
     const approved = isThumbsUp(emojiName);
     const rejected = isThumbsDown(emojiName);
-
-    // Only act on add (not remove) to avoid accidental toggles
-    if (type !== "ADD") return;
 
     if (!approved && !rejected) return;
 
@@ -155,31 +188,25 @@ async function handleReaction({ reaction, user, type }) {
       draftText: reaction.message.content,
     };
 
-    const res = await fetch(N8N_APPROVE_WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    console.log(
-      `Sent draft ${approved ? "approval" : "rejection"} to n8n – HTTP ${
-        res.status
-      } (${emojiName})`
+    await postJson(
+      N8N_APPROVE_WEBHOOK_URL,
+      payload,
+      approved ? "APPROVE" : "REJECT"
     );
   } catch (err) {
     console.error("Error handling reaction:", err);
   }
 }
 
-// Reaction add
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   await handleReaction({ reaction, user, type: "ADD" });
 });
 
-// Optional: reaction remove (not used for approvals, but handy for debugging)
 client.on(Events.MessageReactionRemove, async (reaction, user) => {
   await handleReaction({ reaction, user, type: "REMOVE" });
 });
 
+// -------------------------
 // Login
+// -------------------------
 client.login(DISCORD_TOKEN);
