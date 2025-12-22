@@ -7,6 +7,7 @@ const { Client, GatewayIntentBits, Partials, Events } = require("discord.js");
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const N8N_CHOICE_WEBHOOK_URL = process.env.N8N_CHOICE_WEBHOOK_URL;
 const N8N_APPROVE_WEBHOOK_URL = process.env.N8N_APPROVE_WEBHOOK_URL;
+const N8N_THREAD_WEBHOOK_URL = process.env.N8N_THREAD_WEBHOOK_URL; // ✅ NEW
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
 if (!DISCORD_TOKEN) throw new Error("Missing env var: DISCORD_TOKEN");
@@ -14,6 +15,8 @@ if (!N8N_CHOICE_WEBHOOK_URL)
   throw new Error("Missing env var: N8N_CHOICE_WEBHOOK_URL");
 if (!N8N_APPROVE_WEBHOOK_URL)
   throw new Error("Missing env var: N8N_APPROVE_WEBHOOK_URL");
+if (!N8N_THREAD_WEBHOOK_URL)
+  throw new Error("Missing env var: N8N_THREAD_WEBHOOK_URL"); // ✅ NEW
 if (!CHANNEL_ID) throw new Error("Missing env var: CHANNEL_ID");
 
 // Node 20+ has global fetch.
@@ -56,9 +59,19 @@ function isThumbsDown(emojiName) {
   return typeof emojiName === "string" && emojiName.startsWith("👎");
 }
 
-// ✅ Fix: treat ALL bot messages in the channel as drafts (simple + reliable)
 function looksLikeDraftMessage(_message) {
   return true;
+}
+
+function looksLikePublishedMessage(message) {
+  const text = (message?.content || "").toLowerCase();
+  // Recommended: make your n8n published message include "[PUBLISHED]" for reliability
+  return (
+    message?.author?.bot === true &&
+    (text.includes("[published]") ||
+      text.includes("issue has been published") ||
+      text.includes("published"))
+  );
 }
 
 async function ensureFullReaction(reaction) {
@@ -106,6 +119,7 @@ client.once(Events.ClientReady, (c) => {
     CHANNEL_ID: String(CHANNEL_ID),
     N8N_CHOICE_WEBHOOK_URL,
     N8N_APPROVE_WEBHOOK_URL,
+    N8N_THREAD_WEBHOOK_URL,
   });
 });
 
@@ -136,6 +150,31 @@ async function handleReaction({ reaction, user, type }) {
     if (type !== "ADD") return;
 
     // -------------------------
+    // 0) THREAD TRIGGER: 🧵 on PUBLISHED message
+    // -------------------------
+    const isMyBotMessage = reaction.message.author?.id === client.user.id;
+
+    if (
+      emojiName === "🧵" &&
+      isMyBotMessage &&
+      looksLikePublishedMessage(reaction.message)
+    ) {
+      const payload = {
+        action: "thread",
+        emoji: "🧵",
+        userId: user.id,
+        username: user.username,
+        messageId: reaction.message.id,
+        channelId: reaction.message.channelId,
+        guildId: reaction.message.guildId,
+        publishedText: reaction.message.content,
+      };
+
+      await postJson(N8N_THREAD_WEBHOOK_URL, payload, "THREAD");
+      return;
+    }
+
+    // -------------------------
     // 1) TOPIC CHOICE: 1–5
     // -------------------------
     const choice = emojiToChoice[emojiName];
@@ -156,18 +195,17 @@ async function handleReaction({ reaction, user, type }) {
     // -------------------------
     // 2) DRAFT APPROVAL: 👍 / 👎
     // -------------------------
-    const isBotMessage = reaction.message.author?.id === client.user.id;
     const looksLikeDraft = looksLikeDraftMessage(reaction.message);
 
     console.log("APPROVAL CHECK", {
-      isBotMessage,
+      isBotMessage: isMyBotMessage,
       authorId: reaction.message.author?.id,
       botId: client.user.id,
       looksLikeDraft,
       contentPreview: (reaction.message.content || "").slice(0, 120),
     });
 
-    if (!isBotMessage || !looksLikeDraft) return;
+    if (!isMyBotMessage || !looksLikeDraft) return;
 
     const approved = isThumbsUp(emojiName);
     const rejected = isThumbsDown(emojiName);
