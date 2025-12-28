@@ -7,7 +7,8 @@ const { Client, GatewayIntentBits, Partials, Events } = require("discord.js");
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const N8N_CHOICE_WEBHOOK_URL = process.env.N8N_CHOICE_WEBHOOK_URL;
 const N8N_APPROVE_WEBHOOK_URL = process.env.N8N_APPROVE_WEBHOOK_URL;
-const N8N_THREAD_WEBHOOK_URL = process.env.N8N_THREAD_WEBHOOK_URL; // ✅ NEW
+const N8N_THREAD_WEBHOOK_URL = process.env.N8N_THREAD_WEBHOOK_URL; // 🧵 trigger on PUBLISHED
+const N8N_THREAD_APPROVE_WEBHOOK_URL = process.env.N8N_THREAD_APPROVE_WEBHOOK_URL; // ✅/❌ approval for thread preview
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
 if (!DISCORD_TOKEN) throw new Error("Missing env var: DISCORD_TOKEN");
@@ -16,7 +17,9 @@ if (!N8N_CHOICE_WEBHOOK_URL)
 if (!N8N_APPROVE_WEBHOOK_URL)
   throw new Error("Missing env var: N8N_APPROVE_WEBHOOK_URL");
 if (!N8N_THREAD_WEBHOOK_URL)
-  throw new Error("Missing env var: N8N_THREAD_WEBHOOK_URL"); // ✅ NEW
+  throw new Error("Missing env var: N8N_THREAD_WEBHOOK_URL");
+if (!N8N_THREAD_APPROVE_WEBHOOK_URL)
+  throw new Error("Missing env var: N8N_THREAD_APPROVE_WEBHOOK_URL");
 if (!CHANNEL_ID) throw new Error("Missing env var: CHANNEL_ID");
 
 // Node 20+ has global fetch.
@@ -59,8 +62,35 @@ function isThumbsDown(emojiName) {
   return typeof emojiName === "string" && emojiName.startsWith("👎");
 }
 
-function looksLikeDraftMessage(_message) {
-  return true;
+function isCheck(emojiName) {
+  return emojiName === "✅";
+}
+
+function isCross(emojiName) {
+  return emojiName === "❌";
+}
+
+// Your current draft checker always returns true, which can cause collisions.
+// Tighten it a bit so 👍/👎 approvals don't accidentally fire on other bot messages.
+function looksLikeDraftMessage(message) {
+  const text = (message?.content || "").toLowerCase();
+
+  // Prefer adding explicit markers like "[DRAFT]" in the draft message if you can.
+  // For now we match on common draft structure.
+  return (
+    message?.author?.bot === true &&
+    (text.includes("what’s going on") || text.includes("what's going on")) &&
+    text.includes("why it matters")
+  );
+}
+
+function looksLikeThreadPreviewMessage(message) {
+  const text = message?.content || "";
+  return (
+    message?.author?.bot === true &&
+    text.includes("X THREAD PREVIEW") &&
+    /socialPostId\s*=\s*[^\s]+/i.test(text)
+  );
 }
 
 function looksLikePublishedMessage(message) {
@@ -120,6 +150,7 @@ client.once(Events.ClientReady, (c) => {
     N8N_CHOICE_WEBHOOK_URL,
     N8N_APPROVE_WEBHOOK_URL,
     N8N_THREAD_WEBHOOK_URL,
+    N8N_THREAD_APPROVE_WEBHOOK_URL,
   });
 });
 
@@ -149,11 +180,11 @@ async function handleReaction({ reaction, user, type }) {
 
     if (type !== "ADD") return;
 
+    const isMyBotMessage = reaction.message.author?.id === client.user.id;
+
     // -------------------------
     // 0) THREAD TRIGGER: 🧵 on PUBLISHED message
     // -------------------------
-    const isMyBotMessage = reaction.message.author?.id === client.user.id;
-
     if (
       emojiName === "🧵" &&
       isMyBotMessage &&
@@ -171,6 +202,34 @@ async function handleReaction({ reaction, user, type }) {
       };
 
       await postJson(N8N_THREAD_WEBHOOK_URL, payload, "THREAD");
+      return;
+    }
+
+    // -------------------------
+    // 0.5) THREAD APPROVAL: ✅ / ❌ on THREAD PREVIEW message
+    // -------------------------
+    if (
+      isMyBotMessage &&
+      looksLikeThreadPreviewMessage(reaction.message) &&
+      (isCheck(emojiName) || isCross(emojiName))
+    ) {
+      const payload = {
+        action: "thread_approve",
+        approved: isCheck(emojiName),
+        emoji: emojiName,
+        userId: user.id,
+        username: user.username,
+        messageId: reaction.message.id,
+        channelId: reaction.message.channelId,
+        guildId: reaction.message.guildId,
+        threadPreviewText: reaction.message.content,
+      };
+
+      await postJson(
+        N8N_THREAD_APPROVE_WEBHOOK_URL,
+        payload,
+        isCheck(emojiName) ? "THREAD APPROVE" : "THREAD REJECT"
+      );
       return;
     }
 
@@ -193,7 +252,7 @@ async function handleReaction({ reaction, user, type }) {
     }
 
     // -------------------------
-    // 2) DRAFT APPROVAL: 👍 / 👎
+    // 2) DRAFT APPROVAL: 👍 / 👎 (newsletter draft)
     // -------------------------
     const looksLikeDraft = looksLikeDraftMessage(reaction.message);
 
