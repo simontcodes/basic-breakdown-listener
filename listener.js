@@ -88,7 +88,7 @@ function looksLikeThreadPreviewMessage(message) {
   const text = message?.content || "";
   return (
     message?.author?.bot === true &&
-    text.includes("X THREAD PREVIEW") &&
+    text.includes("X TWEET PREVIEW") &&
     /socialPostId\s*=\s*[^\s]+/i.test(text)
   );
 }
